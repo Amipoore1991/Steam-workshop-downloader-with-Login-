@@ -1,34 +1,16 @@
-name: Steam Workshop Downloader (with Hardcoded Accounts)
+name: Steam Workshop Downloader (WorkshopDL)
 
 on:
   workflow_dispatch:
     inputs:
       app_id:
-        description: 'Steam App ID'
+        description: 'Steam App ID (for naming only)'
         required: true
         default: '108600'
       workshop_id:
         description: 'Workshop Item ID'
         required: true
         default: '3677017550'
-      login_method:
-        description: 'Login method'
-        required: true
-        type: choice
-        options:
-          - hardcoded_account_1 (ruiiixx)
-          - hardcoded_account_2 (premexilmenledgconis)
-          - hardcoded_account_3 (vAbuDy)
-          - hardcoded_account_4 (adgjl1182)
-          - hardcoded_account_5 (gobjj16182)
-          - hardcoded_account_6 (787109690)
-          - custom
-      custom_username:
-        description: 'Custom username (only if login_method = custom)'
-        required: false
-      custom_password:
-        description: 'Custom password (only if login_method = custom)'
-        required: false
       max_chunk_size_mb:
         description: 'Max size per chunk in MB (0 = no split)'
         required: false
@@ -47,70 +29,29 @@ jobs:
       - name: Install dependencies
         run: sudo apt update && sudo apt install -y unzip curl jq
 
-      - name: Download steamcmd
+      - name: Download WorkshopDL CLI
         run: |
-          wget -O steamcmd_linux.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz
-          mkdir -p steamcmd
-          tar -xvzf steamcmd_linux.tar.gz -C steamcmd
-          chmod +x steamcmd/steamcmd.sh
+          wget https://github.com/WorkshopDL/WorkshopDL/releases/latest/download/workshopdl-linux-x64
+          chmod +x workshopdl-linux-x64
 
-      - name: Set login credentials
-        id: credentials
+      - name: Download mod using WorkshopDL (anonymous)
+        id: download
         run: |
-          METHOD="${{ github.event.inputs.login_method }}"
-          if [ "$METHOD" = "custom" ]; then
-            USERNAME="${{ github.event.inputs.custom_username }}"
-            PASSWORD="${{ github.event.inputs.custom_password }}"
-            if [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
-              echo "Error: custom username and password required"
-              exit 1
-            fi
-          elif [ "$METHOD" = "hardcoded_account_1 (ruiiixx)" ]; then
-            USERNAME="ruiiixx"
-            PASSWORD="S67GBTB83D3Y"
-          elif [ "$METHOD" = "hardcoded_account_2 (premexilmenledgconis)" ]; then
-            USERNAME="premexilmenledgconis"
-            PASSWORD="3pXbHZJlDb"
-          elif [ "$METHOD" = "hardcoded_account_3 (vAbuDy)" ]; then
-            USERNAME="vAbuDy"
-            PASSWORD="Boolq8vip"
-          elif [ "$METHOD" = "hardcoded_account_4 (adgjl1182)" ]; then
-            USERNAME="adgjl1182"
-            PASSWORD="QETUO99999"
-          elif [ "$METHOD" = "hardcoded_account_5 (gobjj16182)" ]; then
-            USERNAME="gobjj16182"
-            PASSWORD="zuobiao8222"
-          elif [ "$METHOD" = "hardcoded_account_6 (787109690)" ]; then
-            USERNAME="787109690"
-            PASSWORD="HucUxYMQig15"
-          else
-            echo "Error: unknown login method"
+          # WorkshopDL expects the full workshop URL
+          WORKSHOP_URL="https://steamcommunity.com/sharedfiles/filedetails/?id=${{ github.event.inputs.workshop_id }}"
+          # Create output directory (WorkshopDL will place mods inside a folder named by title)
+          mkdir -p workshop_output
+          # Run WorkshopDL in anonymous mode, output to workshop_output
+          ./workshopdl-linux-x64 download "$WORKSHOP_URL" --output workshop_output
+          # Find the downloaded mod folder (workshop_output/<mod_name>)
+          MOD_FOLDER=$(find workshop_output -mindepth 1 -maxdepth 1 -type d | head -1)
+          if [ -z "$MOD_FOLDER" ]; then
+            echo "Error: WorkshopDL did not create a mod folder"
             exit 1
           fi
-          echo "USERNAME=$USERNAME" >> $GITHUB_OUTPUT
-          echo "PASSWORD=$PASSWORD" >> $GITHUB_OUTPUT
-
-      - name: Run steamcmd with selected account
-        run: |
-          ./steamcmd/steamcmd.sh +login "${{ steps.credentials.outputs.USERNAME }}" "${{ steps.credentials.outputs.PASSWORD }}" \
-                                   +workshop_download_item ${{ github.event.inputs.app_id }} ${{ github.event.inputs.workshop_id }} \
-                                   +quit
-
-      - name: Check if download succeeded
-        id: check
-        run: |
-          MOD_FOLDER="$HOME/Steam/steamapps/workshop/content/${{ github.event.inputs.app_id }}/${{ github.event.inputs.workshop_id }}"
-          if [ -d "$MOD_FOLDER" ]; then
-            echo "success=true" >> $GITHUB_OUTPUT
-            echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
-          else
-            echo "success=false" >> $GITHUB_OUTPUT
-            echo "Download failed. The account may not own the game, or the mod does not exist."
-            exit 1
-          fi
+          echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
 
       - name: Get mod name from Steam API
-        if: steps.check.outputs.success == 'true'
         id: modname
         run: |
           API_URL="https://api.steampowered.com/ISteamRemoteStorage/GetPublishedFileDetails/v1/"
@@ -126,11 +67,10 @@ jobs:
           echo "BASE_NAME=$BASE_NAME" >> $GITHUB_OUTPUT
 
       - name: Zip and optionally split the mod
-        if: steps.check.outputs.success == 'true'
         run: |
           mkdir -p downloads
           BASE_NAME="${{ steps.modname.outputs.BASE_NAME }}"
-          MOD_FOLDER="${{ steps.check.outputs.MOD_FOLDER }}"
+          MOD_FOLDER="${{ steps.download.outputs.MOD_FOLDER }}"
           TEMP_ZIP="downloads/${BASE_NAME}.tmp.zip"
           (cd "$MOD_FOLDER" && zip -r "$GITHUB_WORKSPACE/${TEMP_ZIP}" .)
           ZIP_SIZE=$(stat -c%s "$TEMP_ZIP")
@@ -151,7 +91,6 @@ jobs:
           fi
 
       - name: Commit and push
-        if: steps.check.outputs.success == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
