@@ -1,4 +1,4 @@
-name: Steam Workshop Downloader (Choose Method)
+name: Steam Workshop Downloader (3 Engines)
 
 on:
   workflow_dispatch:
@@ -12,12 +12,13 @@ on:
         required: true
         default: '3677017550'
       download_method:
-        description: 'Download method'
+        description: 'Download engine'
         required: true
         type: choice
         options:
           - steamcmd (anonymous)
           - workshopdl (anonymous)
+          - depotdownloader (anonymous)
       max_chunk_size_mb:
         description: 'Max size per chunk in MB (0 = no split)'
         required: false
@@ -33,11 +34,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install base dependencies
         run: sudo apt update && sudo apt install -y unzip curl jq
 
       # ------------------------------------------------------------------
-      # Method 1: steamcmd (anonymous)
+      # Engine 1: steamcmd
       # ------------------------------------------------------------------
       - name: Setup steamcmd
         if: github.event.inputs.download_method == 'steamcmd (anonymous)'
@@ -47,9 +48,9 @@ jobs:
           tar -xvzf steamcmd_linux.tar.gz -C steamcmd
           chmod +x steamcmd/steamcmd.sh
 
-      - name: Download with steamcmd (anonymous)
+      - name: Download with steamcmd
         if: github.event.inputs.download_method == 'steamcmd (anonymous)'
-        id: download_steamcmd
+        id: steamcmd_dl
         run: |
           ./steamcmd/steamcmd.sh +login anonymous \
                                    +workshop_download_item ${{ github.event.inputs.app_id }} ${{ github.event.inputs.workshop_id }} \
@@ -62,7 +63,7 @@ jobs:
           echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
-      # Method 2: WorkshopDL (anonymous)
+      # Engine 2: WorkshopDL
       # ------------------------------------------------------------------
       - name: Download WorkshopDL CLI
         if: github.event.inputs.download_method == 'workshopdl (anonymous)'
@@ -70,9 +71,9 @@ jobs:
           wget https://github.com/WorkshopDL/WorkshopDL/releases/latest/download/workshopdl-linux-x64
           chmod +x workshopdl-linux-x64
 
-      - name: Download with WorkshopDL (anonymous)
+      - name: Download with WorkshopDL
         if: github.event.inputs.download_method == 'workshopdl (anonymous)'
-        id: download_workshopdl
+        id: workshopdl_dl
         run: |
           WORKSHOP_URL="https://steamcommunity.com/sharedfiles/filedetails/?id=${{ github.event.inputs.workshop_id }}"
           mkdir -p workshop_output
@@ -85,7 +86,44 @@ jobs:
           echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
-      # Common post-processing steps (mod name, zip, splitting, commit)
+      # Engine 3: DepotDownloader
+      # ------------------------------------------------------------------
+      - name: Setup .NET (for DepotDownloader)
+        if: github.event.inputs.download_method == 'depotdownloader (anonymous)'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Download DepotDownloader
+        if: github.event.inputs.download_method == 'depotdownloader (anonymous)'
+        run: |
+          wget https://github.com/SteamRE/DepotDownloader/releases/latest/download/DepotDownloader.zip
+          unzip DepotDownloader.zip -d DepotDownloader
+          chmod +x DepotDownloader/DepotDownloader
+
+      - name: Download with DepotDownloader
+        if: github.event.inputs.download_method == 'depotdownloader (anonymous)'
+        id: depot_dl
+        run: |
+          cd DepotDownloader
+          # DepotDownloader can download anonymously; it places files in ./depots/ by default
+          dotnet DepotDownloader.dll -app ${{ github.event.inputs.app_id }} -pubfile ${{ github.event.inputs.workshop_id }} -anonymous
+          # Find the downloaded workshop content. It's usually in depots/<appid>/<workshopid>/
+          MOD_FOLDER=$(find . -type d -path "*/${{ github.event.inputs.app_id }}/${{ github.event.inputs.workshop_id }}" | head -1)
+          if [ -z "$MOD_FOLDER" ]; then
+            # Fallback: look for any folder containing the workshop ID
+            MOD_FOLDER=$(find . -type d -name "${{ github.event.inputs.workshop_id }}" | head -1)
+          fi
+          if [ -z "$MOD_FOLDER" ]; then
+            echo "Error: DepotDownloader did not create the expected mod folder"
+            exit 1
+          fi
+          # Convert to absolute path
+          MOD_FOLDER=$(realpath "$MOD_FOLDER")
+          echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
+
+      # ------------------------------------------------------------------
+      # Common post-processing (mod name, zip, split, commit)
       # ------------------------------------------------------------------
       - name: Get mod name from Steam API
         id: modname
@@ -104,14 +142,17 @@ jobs:
 
       - name: Zip and optionally split the mod
         run: |
-          # Determine MOD_FOLDER based on which method was used
-          if [ "${{ github.event.inputs.download_method }}" = "steamcmd (anonymous)" ]; then
-            MOD_FOLDER="${{ steps.download_steamcmd.outputs.MOD_FOLDER }}"
+          # Determine MOD_FOLDER based on selected method
+          METHOD="${{ github.event.inputs.download_method }}"
+          if [ "$METHOD" = "steamcmd (anonymous)" ]; then
+            MOD_FOLDER="${{ steps.steamcmd_dl.outputs.MOD_FOLDER }}"
+          elif [ "$METHOD" = "workshopdl (anonymous)" ]; then
+            MOD_FOLDER="${{ steps.workshopdl_dl.outputs.MOD_FOLDER }}"
           else
-            MOD_FOLDER="${{ steps.download_workshopdl.outputs.MOD_FOLDER }}"
+            MOD_FOLDER="${{ steps.depot_dl.outputs.MOD_FOLDER }}"
           fi
-          if [ -z "$MOD_FOLDER" ]; then
-            echo "Error: No MOD_FOLDER found"
+          if [ -z "$MOD_FOLDER" ] || [ ! -d "$MOD_FOLDER" ]; then
+            echo "Error: MOD_FOLDER is empty or does not exist"
             exit 1
           fi
           mkdir -p downloads
