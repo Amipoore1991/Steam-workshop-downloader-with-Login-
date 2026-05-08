@@ -1,4 +1,4 @@
-name: Steam Workshop Downloader (3 Engines)
+name: Steam Workshop Downloader (2 Engines)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,6 @@ on:
         type: choice
         options:
           - steamcmd (anonymous)
-          - workshopdl (anonymous)
           - depotdownloader (anonymous)
       max_chunk_size_mb:
         description: 'Max size per chunk in MB (0 = no split)'
@@ -63,39 +62,7 @@ jobs:
           echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
-      # Engine 2: WorkshopDL (fixed asset detection)
-      # ------------------------------------------------------------------
-      - name: Download WorkshopDL CLI (latest release)
-        if: github.event.inputs.download_method == 'workshopdl (anonymous)'
-        run: |
-          ASSET_URL=$(curl -s https://api.github.com/repos/WorkshopDL/WorkshopDL/releases/latest | jq -r '.assets[] | select(.name | test("linux.*x64|linux.*amd64|x86_64.*linux", "i")) | .browser_download_url' | head -1)
-          if [ -z "$ASSET_URL" ]; then
-            ASSET_URL=$(curl -s https://api.github.com/repos/WorkshopDL/WorkshopDL/releases/latest | jq -r '.assets[] | select(.name | test("linux", "i") and (test("windows|osx|mac", "i") | not)) | .browser_download_url' | head -1)
-          fi
-          if [ -z "$ASSET_URL" ]; then
-            echo "Failed to get WorkshopDL latest release URL"
-            exit 1
-          fi
-          echo "Downloading from $ASSET_URL"
-          wget -O workshopdl-linux-x64 "$ASSET_URL"
-          chmod +x workshopdl-linux-x64
-
-      - name: Download with WorkshopDL
-        if: github.event.inputs.download_method == 'workshopdl (anonymous)'
-        id: workshopdl_dl
-        run: |
-          WORKSHOP_URL="https://steamcommunity.com/sharedfiles/filedetails/?id=${{ github.event.inputs.workshop_id }}"
-          mkdir -p workshop_output
-          ./workshopdl-linux-x64 download "$WORKSHOP_URL" --output workshop_output
-          MOD_FOLDER=$(find workshop_output -mindepth 1 -maxdepth 1 -type d | head -1)
-          if [ -z "$MOD_FOLDER" ]; then
-            echo "Error: WorkshopDL did not create a mod folder"
-            exit 1
-          fi
-          echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
-
-      # ------------------------------------------------------------------
-      # Engine 3: DepotDownloader
+      # Engine 2: DepotDownloader
       # ------------------------------------------------------------------
       - name: Setup .NET
         if: github.event.inputs.download_method == 'depotdownloader (anonymous)'
@@ -148,8 +115,6 @@ jobs:
           METHOD="${{ github.event.inputs.download_method }}"
           if [ "$METHOD" = "steamcmd (anonymous)" ]; then
             MOD_FOLDER="${{ steps.steamcmd_dl.outputs.MOD_FOLDER }}"
-          elif [ "$METHOD" = "workshopdl (anonymous)" ]; then
-            MOD_FOLDER="${{ steps.workshopdl_dl.outputs.MOD_FOLDER }}"
           else
             MOD_FOLDER="${{ steps.depot_dl.outputs.MOD_FOLDER }}"
           fi
