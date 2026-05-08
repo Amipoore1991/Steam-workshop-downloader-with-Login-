@@ -86,44 +86,46 @@ jobs:
           echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
-      # Engine 3: DepotDownloader
+      # Engine 3: DepotDownloader (fixed)
       # ------------------------------------------------------------------
-      - name: Setup .NET (for DepotDownloader)
+      - name: Setup .NET
         if: github.event.inputs.download_method == 'depotdownloader (anonymous)'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
-      - name: Download DepotDownloader
+      - name: Download DepotDownloader (latest release)
         if: github.event.inputs.download_method == 'depotdownloader (anonymous)'
         run: |
-          wget https://github.com/SteamRE/DepotDownloader/releases/latest/download/DepotDownloader.zip
+          LATEST_URL=$(curl -s https://api.github.com/repos/SteamRE/DepotDownloader/releases/latest | grep -oP '"browser_download_url": "\K[^"]+' | head -1)
+          if [ -z "$LATEST_URL" ]; then
+            echo "Failed to get latest release URL"
+            exit 1
+          fi
+          echo "Downloading from $LATEST_URL"
+          wget -O DepotDownloader.zip "$LATEST_URL"
+          mkdir -p DepotDownloader
           unzip DepotDownloader.zip -d DepotDownloader
-          chmod +x DepotDownloader/DepotDownloader
 
       - name: Download with DepotDownloader
         if: github.event.inputs.download_method == 'depotdownloader (anonymous)'
         id: depot_dl
         run: |
           cd DepotDownloader
-          # DepotDownloader can download anonymously; it places files in ./depots/ by default
           dotnet DepotDownloader.dll -app ${{ github.event.inputs.app_id }} -pubfile ${{ github.event.inputs.workshop_id }} -anonymous
-          # Find the downloaded workshop content. It's usually in depots/<appid>/<workshopid>/
           MOD_FOLDER=$(find . -type d -path "*/${{ github.event.inputs.app_id }}/${{ github.event.inputs.workshop_id }}" | head -1)
           if [ -z "$MOD_FOLDER" ]; then
-            # Fallback: look for any folder containing the workshop ID
             MOD_FOLDER=$(find . -type d -name "${{ github.event.inputs.workshop_id }}" | head -1)
           fi
           if [ -z "$MOD_FOLDER" ]; then
-            echo "Error: DepotDownloader did not create the expected mod folder"
+            echo "Error: DepotDownloader did not create mod folder"
             exit 1
           fi
-          # Convert to absolute path
           MOD_FOLDER=$(realpath "$MOD_FOLDER")
           echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
-      # Common post-processing (mod name, zip, split, commit)
+      # Common post-processing
       # ------------------------------------------------------------------
       - name: Get mod name from Steam API
         id: modname
@@ -142,7 +144,6 @@ jobs:
 
       - name: Zip and optionally split the mod
         run: |
-          # Determine MOD_FOLDER based on selected method
           METHOD="${{ github.event.inputs.download_method }}"
           if [ "$METHOD" = "steamcmd (anonymous)" ]; then
             MOD_FOLDER="${{ steps.steamcmd_dl.outputs.MOD_FOLDER }}"
