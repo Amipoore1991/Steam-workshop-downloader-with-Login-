@@ -1,16 +1,23 @@
-name: Steam Workshop Downloader (WorkshopDL)
+name: Steam Workshop Downloader (Choose Method)
 
 on:
   workflow_dispatch:
     inputs:
       app_id:
-        description: 'Steam App ID (for naming only)'
+        description: 'Steam App ID'
         required: true
         default: '108600'
       workshop_id:
         description: 'Workshop Item ID'
         required: true
         default: '3677017550'
+      download_method:
+        description: 'Download method'
+        required: true
+        type: choice
+        options:
+          - steamcmd (anonymous)
+          - workshopdl (anonymous)
       max_chunk_size_mb:
         description: 'Max size per chunk in MB (0 = no split)'
         required: false
@@ -29,21 +36,47 @@ jobs:
       - name: Install dependencies
         run: sudo apt update && sudo apt install -y unzip curl jq
 
+      # ------------------------------------------------------------------
+      # Method 1: steamcmd (anonymous)
+      # ------------------------------------------------------------------
+      - name: Setup steamcmd
+        if: github.event.inputs.download_method == 'steamcmd (anonymous)'
+        run: |
+          wget -O steamcmd_linux.tar.gz https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz
+          mkdir -p steamcmd
+          tar -xvzf steamcmd_linux.tar.gz -C steamcmd
+          chmod +x steamcmd/steamcmd.sh
+
+      - name: Download with steamcmd (anonymous)
+        if: github.event.inputs.download_method == 'steamcmd (anonymous)'
+        id: download_steamcmd
+        run: |
+          ./steamcmd/steamcmd.sh +login anonymous \
+                                   +workshop_download_item ${{ github.event.inputs.app_id }} ${{ github.event.inputs.workshop_id }} \
+                                   +quit
+          MOD_FOLDER="$HOME/Steam/steamapps/workshop/content/${{ github.event.inputs.app_id }}/${{ github.event.inputs.workshop_id }}"
+          if [ ! -d "$MOD_FOLDER" ]; then
+            echo "Error: steamcmd download failed – folder not found"
+            exit 1
+          fi
+          echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
+
+      # ------------------------------------------------------------------
+      # Method 2: WorkshopDL (anonymous)
+      # ------------------------------------------------------------------
       - name: Download WorkshopDL CLI
+        if: github.event.inputs.download_method == 'workshopdl (anonymous)'
         run: |
           wget https://github.com/WorkshopDL/WorkshopDL/releases/latest/download/workshopdl-linux-x64
           chmod +x workshopdl-linux-x64
 
-      - name: Download mod using WorkshopDL (anonymous)
-        id: download
+      - name: Download with WorkshopDL (anonymous)
+        if: github.event.inputs.download_method == 'workshopdl (anonymous)'
+        id: download_workshopdl
         run: |
-          # WorkshopDL expects the full workshop URL
           WORKSHOP_URL="https://steamcommunity.com/sharedfiles/filedetails/?id=${{ github.event.inputs.workshop_id }}"
-          # Create output directory (WorkshopDL will place mods inside a folder named by title)
           mkdir -p workshop_output
-          # Run WorkshopDL in anonymous mode, output to workshop_output
           ./workshopdl-linux-x64 download "$WORKSHOP_URL" --output workshop_output
-          # Find the downloaded mod folder (workshop_output/<mod_name>)
           MOD_FOLDER=$(find workshop_output -mindepth 1 -maxdepth 1 -type d | head -1)
           if [ -z "$MOD_FOLDER" ]; then
             echo "Error: WorkshopDL did not create a mod folder"
@@ -51,6 +84,9 @@ jobs:
           fi
           echo "MOD_FOLDER=$MOD_FOLDER" >> $GITHUB_OUTPUT
 
+      # ------------------------------------------------------------------
+      # Common post-processing steps (mod name, zip, splitting, commit)
+      # ------------------------------------------------------------------
       - name: Get mod name from Steam API
         id: modname
         run: |
@@ -68,9 +104,18 @@ jobs:
 
       - name: Zip and optionally split the mod
         run: |
+          # Determine MOD_FOLDER based on which method was used
+          if [ "${{ github.event.inputs.download_method }}" = "steamcmd (anonymous)" ]; then
+            MOD_FOLDER="${{ steps.download_steamcmd.outputs.MOD_FOLDER }}"
+          else
+            MOD_FOLDER="${{ steps.download_workshopdl.outputs.MOD_FOLDER }}"
+          fi
+          if [ -z "$MOD_FOLDER" ]; then
+            echo "Error: No MOD_FOLDER found"
+            exit 1
+          fi
           mkdir -p downloads
           BASE_NAME="${{ steps.modname.outputs.BASE_NAME }}"
-          MOD_FOLDER="${{ steps.download.outputs.MOD_FOLDER }}"
           TEMP_ZIP="downloads/${BASE_NAME}.tmp.zip"
           (cd "$MOD_FOLDER" && zip -r "$GITHUB_WORKSPACE/${TEMP_ZIP}" .)
           ZIP_SIZE=$(stat -c%s "$TEMP_ZIP")
@@ -95,5 +140,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add downloads/
-          git commit -m "Add mod ${{ github.event.inputs.workshop_id }} from app ${{ github.event.inputs.app_id }} [skip ci]" || echo "No changes"
+          git commit -m "Add mod ${{ github.event.inputs.workshop_id }} via ${{ github.event.inputs.download_method }} [skip ci]" || echo "No changes"
           git push
